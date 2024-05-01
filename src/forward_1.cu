@@ -60,8 +60,9 @@ void forward_1_kernel(
             for (int y = 0; y < Bc; y++) {
                 if (j * Bc + y >= N)
                     break;  // break if we are done with the sequence
-                int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
-                bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                    
+                int tempI = (bx * N) + i * Br + tx, tempJ = (bx * N) + j * Bc + y; // mask = 1 if I = descendent of J
+                bool mask = (!IsTree) || ((startT[tempI] >= startT[tempJ]) && (endT[tempI] <= endT[tempJ]));
                 // causal mask
                 if (mask){ // FIXME: Thread divergence
                     float sum = 0;
@@ -85,8 +86,8 @@ void forward_1_kernel(
                 if (j * Bc + y >= N)
                     break;  // break if we are done with the sequence
                 
-                int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
-                bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                int tempI = (bx * N) + i * Br + tx, tempJ = (bx * N) + j * Bc + y; // mask = 1 if I = descendent of J
+                bool mask = (!IsTree) || ((startT[tempI] >= startT[tempJ]) && (endT[tempI] <= endT[tempJ]));
                 // causal mask
                 if (mask){ // FIXME: Thread divergence
                     S[(Bc * tx) + y] = __expf(S[(Bc * tx) + y] - new_row_m);
@@ -105,8 +106,8 @@ void forward_1_kernel(
                     if (j * Bc + y >= N)
                         break;  // break if we are done with the sequence
 
-                    int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
-                    bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                    int tempI = (bx * N) + i * Br + tx, tempJ = (bx * N) + j * Bc + y; // mask = 1 if I = descendent of J
+                    bool mask = (!IsTree) || ((startT[tempI] >= startT[tempJ]) && (endT[tempI] <= endT[tempJ]));
                     // causal mask
                     if (mask){ // FIXME: Thread divergence
                         pv += S[(Bc * tx) + y] * Vj[(y * d) + x];
