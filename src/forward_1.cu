@@ -7,14 +7,17 @@ void forward_1_kernel(
     const float* Q,
     const float* K,
     const float* V,
-    const int N,
-    const int d,
-    const int Tc,
-    const int Tr,
+    const int N, // Sequence Length
+    const int d, // Hidden Dimension per Head
+    const int Tc, // Tc = ceil(N / Bc)
+    const int Tr, // Tr = ceil(N / Br)
     const int Bc,
     const int Br,
-    const float softmax_scale,
-    float* O
+    const float softmax_scale, // = 1 / sqrt(d)
+    float* O, // Output Tensor
+    const float* startT, // (B * N) start Time
+    const float* endT, // (B * N) end Time
+    const bool IsTree // If true then use tree causality
 ) {
     int tx = threadIdx.x;
     int bx = blockIdx.x; int by = blockIdx.y;  // batch and head index
@@ -29,20 +32,21 @@ void forward_1_kernel(
     float* Kj = &sram[tile_size];
     float* Vj = &sram[tile_size * 2];
     float* S = &sram[tile_size * 3];
-
+    
     for (int i = 0; i < Tr; ++i) {
         if (i * Br + tx >= N)
             break;  // break if we are done with the sequence
 
         // Load Qi from HBM to SRAM, l and m to registers
         for (int x = 0; x < d; x++) {
+            // FIXME: Bank conflict here? Anyway it's not optimal. Adj threads should access adjacent elements.
             Qi[(tx * d) + x] = Q[qkv_offset + (tile_size * i) + (tx * d) + x];
         }
         float row_m_prev = -INFINITY;
         float row_l_prev = 0;
 
         // Causal mask: j <= i
-        for (int j = 0; j <= i; ++j) {
+        for (int j = 0; j < Tc; ++j) { // j is the column tile index
             __syncthreads();
             // Load Kj, Vj from HBM to SRAM
             for (int x = 0; x < d; x++) {
@@ -56,16 +60,19 @@ void forward_1_kernel(
             for (int y = 0; y < Bc; y++) {
                 if (j * Bc + y >= N)
                     break;  // break if we are done with the sequence
-                if (i * Br + tx < j * Bc + y)
-                    break;
-                float sum = 0;
-                for (int x = 0; x < d; x++)
-                    sum += Qi[(tx * d) + x] * Kj[(y * d) + x];
-                sum *= softmax_scale;
-                S[(Bc * tx) + y] = sum;
+                int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
+                bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                // causal mask
+                if (mask){ // FIXME: Thread divergence
+                    float sum = 0;
+                    for (int x = 0; x < d; x++)
+                        sum += Qi[(tx * d) + x] * Kj[(y * d) + x]; // FIXME: Store Kj.T directly. conseq elements.
+                    sum *= softmax_scale;
+                    S[(Bc * tx) + y] = sum; // FIXME: Again the bank thing. Shouldn't they access conseq elements?
 
-                if (sum > row_m)
-                    row_m = sum;
+                    if (sum > row_m)
+                        row_m = sum;
+                }
             }
 
             // m_i^j = max(m_i^j-1, row_max(S_i^j))
@@ -77,10 +84,14 @@ void forward_1_kernel(
             for (int y = 0; y < Bc; y++) {
                 if (j * Bc + y >= N)
                     break;  // break if we are done with the sequence
-                if (i * Br + tx < j * Bc + y)
-                    break;
-                S[(Bc * tx) + y] = __expf(S[(Bc * tx) + y] - new_row_m);
-                row_l += S[(Bc * tx) + y];
+                
+                int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
+                bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                // causal mask
+                if (mask){ // FIXME: Thread divergence
+                    S[(Bc * tx) + y] = __expf(S[(Bc * tx) + y] - new_row_m);
+                    row_l += S[(Bc * tx) + y];
+                }
             }
 
             // l_i^j = (exp(m_i^j-1 - m_i^j) * l_i^j-1) + row_sum(P_i^j)
@@ -93,9 +104,13 @@ void forward_1_kernel(
                 for (int y = 0; y < Bc; y++) {
                     if (j * Bc + y >= N)
                         break;  // break if we are done with the sequence
-                    if (i * Br + tx < j * Bc + y)
-                        break;
-                    pv += S[(Bc * tx) + y] * Vj[(y * d) + x];
+
+                    int tempI = (bx * N * d) + i * Br + tx, tempJ = (bx * N * d) + j * Bc + y;
+                    bool mask = (!IsTree) || ((startT[tempI] < startT[tempJ]) && (endT[tempI] > endT[tempJ]));
+                    // causal mask
+                    if (mask){ // FIXME: Thread divergence
+                        pv += S[(Bc * tx) + y] * Vj[(y * d) + x];
+                    }
                 }
                 O[qkv_offset + (tile_size * i) + (tx * d) + x] = \
                     row_m_exp * O[qkv_offset + (tile_size * i) + (tx * d) + x] + pv;
@@ -112,7 +127,8 @@ void forward_1_kernel(
     }
 }
 
-std::vector<torch::Tensor> forward_1(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
+std::vector<torch::Tensor> forward_1(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
+                                torch::Tensor StartTimes, torch::Tensor EndTimes, bool IsTree) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0); 
     
@@ -126,7 +142,9 @@ std::vector<torch::Tensor> forward_1(torch::Tensor Q, torch::Tensor K, torch::Te
     printf("Max Share Memory per Block: %d KB\n", prop.sharedMemPerBlock / 1024);
     
     // TODO: determine Bc, Br dynamically
-    const int Bc = 32; const int Br = 32;
+    const int Bc = 32;
+    const int Br = 32;
+    assert(Br == Bc);
 
     const int B = Q.size(0); const int nh = Q.size(1);
     const int N = Q.size(2); const int d = Q.size(3);
@@ -150,15 +168,16 @@ std::vector<torch::Tensor> forward_1(torch::Tensor Q, torch::Tensor K, torch::Te
     printf("Max shared memory: %d, requested shared memory: %d \n", max_sram_size, sram_size);
 
     dim3 grid_dim(B, nh);  // batch_size x num_heads
-    dim3 block_dim(Br);  // Br threads per block
-    
+    dim3 block_dim(Br); // FIXME
+        
     cudaEvent_t start, stop;
     cudaEventCreate(&start); cudaEventCreate(&stop);
     cudaEventRecord(start);
 
     forward_1_kernel<<<grid_dim, block_dim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-        N, d, Tc, Tr, Bc, Br, softmax_scale, O.data_ptr<float>()
+        N, d, Tc, Tr, Bc, Br, softmax_scale, O.data_ptr<float>(),
+        StartTimes.data_ptr<float>(), EndTimes.data_ptr<float>(), IsTree
     );
 
     cudaEventRecord(stop); cudaEventSynchronize(stop);

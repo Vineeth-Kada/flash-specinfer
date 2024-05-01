@@ -7,6 +7,8 @@ from torch.utils.cpp_extension import load
 import os
 os.environ['TORCH_CUDA_ARCH_LIST'] = '8.6' # For A6000
 
+from tree import generate_random_trees
+
 # Load the CUDA kernel as a python module
 minimal_attn = load(
     name='minimal_attn',
@@ -15,32 +17,41 @@ minimal_attn = load(
 )
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 10
+batch_size = 4
 n_head = 2
-seq_len = 1024
-head_embd = 64
+head_embd = 16
+num_tree_nodes = 246
+prompt_length = 10
+seq_len = num_tree_nodes + prompt_length
+IsTree = False
 
 q = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
 k = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
 v = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
 
+# Tree creation for SpecInfer
+start_times, end_times, causal_masks = generate_random_trees(batch_size, num_tree_nodes, prompt_length)
+assert causal_masks.shape == (batch_size, seq_len, seq_len)
+
 print('\n\n=== profiling torch attention === ')
 # os.environ['TORCHINDUCTOR_COORDINATE_DESCENT_TUNING'] = '1'
-def torch_attention(q, k, v):
-    output = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+def torch_attention(q, k, v, mask, IsTree):
+    if not IsTree:
+        mask = None
+    output = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
     return output
-# torch_attention_script = torch.jit.script(torch_attention)
+
 with torch.no_grad():
     start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     start.record()
-    manual_result_torch = torch_attention(q, k, v)
+    manual_result_torch = torch_attention(q, k, v, causal_masks.unsqueeze(1), IsTree)
     end.record()
     torch.cuda.synchronize()
 print("Time taken in ms: ", start.elapsed_time(end))
 
 print('\n\n=== profiling minimal flash attention (forward pass) === ')
 with torch.no_grad():
-    (minimal_result,) = minimal_attn.forward_1(q, k, v)
+    (minimal_result,) = minimal_attn.forward_1(q, k, v, start_times, end_times, IsTree)
 print(
     'attn values sanity check:',
     torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02),
