@@ -1,5 +1,9 @@
 import random
 import torch
+import sys
+import os
+
+sys.setrecursionlimit(10000)
 
 NODE_START_TIMES = []
 NODE_END_TIMES = []
@@ -39,7 +43,6 @@ def generate_tree():
     add_random_nodes(root)
     return root
 
-
 def dfs_(node, time):
     if node is not None:
         node.start_time = time
@@ -58,15 +61,12 @@ def collect_node_times(node):
         for child in node.children:
             collect_node_times(child)
 
-def create_causal_mask():
-    num_nodes = len(NODE_START_TIMES)
-    causal_mask = [[False] * num_nodes for _ in range(num_nodes)]
-    for i in range(num_nodes):
-        for j in range(num_nodes):
-            if NODE_START_TIMES[i] <= NODE_START_TIMES[j] and NODE_END_TIMES[i] >= NODE_END_TIMES[j]:
-                # Transpose of causal mask to get lower triangular matrix
-                causal_mask[j][i] = True
-    return causal_mask
+def create_causal_mask(start_times, end_times):
+    start_I = start_times[:,:,None]
+    start_J = start_times[:,None,:]
+    end_I = end_times[:,:,None]
+    end_J = end_times[:,None,:]
+    return ((start_I >= start_J) & (end_I <= end_J)).contiguous()
 
 def dfs(root):
     global NODE_START_TIMES, NODE_END_TIMES
@@ -75,31 +75,43 @@ def dfs(root):
     dfs_time = 0
     dfs_(root, dfs_time)
     collect_node_times(root)
-    causal_mask = create_causal_mask()
-    return NODE_START_TIMES, NODE_END_TIMES, causal_mask
+    return NODE_START_TIMES, NODE_END_TIMES
 
 
 def generate_random_trees(num_trees, num_nodes, root_chain):
+    file_name = os.path.join("../data", f"tree_dfs_data_BS_{num_trees}_RN_{num_nodes}_LN_{root_chain}.pth")
+    if os.path.exists(file_name):
+        print("Using Cached Trees")
+        loaded_tree_data = torch.load(file_name)
+        start_times = loaded_tree_data['start_times'].cuda()
+        end_times = loaded_tree_data['end_times'].cuda()
+        causal_masks = create_causal_mask(start_times, end_times)
+        return start_times, end_times, causal_masks
+
+    print("Generating New Trees")
     global LINEAR_REMAINING, RANDOM_REMAINING
     tree_start_times = []
     tree_end_times = []
-    causal_mask = []
     for _ in range(num_trees):
         LINEAR_REMAINING = root_chain
         RANDOM_REMAINING = num_nodes
         root = generate_tree()
-        _start_time, _end_times, _causal_mask = dfs(root)
-        assert len(_start_time) == num_nodes + root_chain
-        assert len(_end_times) == num_nodes + root_chain
+        _start_time, _end_times = dfs(root)
+        _start_time = torch.tensor(_start_time, dtype=torch.float32).cuda()
+        _end_times = torch.tensor(_end_times, dtype=torch.float32).cuda()
         tree_start_times.append(_start_time)
         tree_end_times.append(_end_times)
-        causal_mask.append(_causal_mask)
 
-    start_times = torch.tensor(tree_start_times, dtype=torch.float32).cuda()
-    end_times = torch.tensor(tree_end_times, dtype=torch.float32).cuda()
-    causal_masks = torch.tensor(causal_mask).cuda()
+    start_times = torch.stack(tree_start_times)
+    end_times = torch.stack(tree_end_times)
+    causal_masks = create_causal_mask(start_times, end_times)
 
-    return start_times, end_times, causal_masks
+    torch.save({
+        'start_times': start_times.cpu(),
+        'end_times': end_times.cpu(),
+    }, file_name)
+
+    return start_times.cuda(), end_times.cuda(), causal_masks.cuda()
 
 if __name__ == "__main__":
     tree_start_times, tree_end_times, causal_mask = generate_random_trees(1, 10, 3)
