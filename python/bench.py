@@ -12,7 +12,7 @@ from tree import generate_random_trees
 # Load the CUDA kernel as a python module
 minimal_attn = load(
     name='minimal_attn',
-    sources = list(map(lambda x: '../src/' + x, ['main.cpp', 'forward_1.cu', 'forward_2.cu'])),
+    sources = list(map(lambda x: '../src/' + x, ['main.cpp', 'forward_1.cu', 'forward_2.cu', 'forward_3.cu'])),
     extra_cuda_cflags=['-O3', '--use_fast_math']
 )
 
@@ -20,7 +20,7 @@ minimal_attn = load(
 batch_size = 10
 n_head = 10
 head_embd = 64
-num_tree_nodes = 2**10 - 40
+num_tree_nodes = 2**14 - 40
 prompt_length = 40
 
 seq_len = num_tree_nodes + prompt_length
