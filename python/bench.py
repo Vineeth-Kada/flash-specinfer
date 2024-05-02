@@ -11,7 +11,8 @@ from tree import generate_random_trees
 minimal_attn = load(
     name='minimal_attn',
     sources = list(map(lambda x: '../src/' + x, ['main.cpp', 'forward_1.cu', 'forward_2.cu', \
-                                                 'forward_3.cu', 'forward_4.cu', 'forward_5.cu', 'forward_6.cu'])),
+                                                 'forward_3.cu', 'forward_4.cu', 'forward_5.cu', \
+                                                 'forward_6.cu', 'forward_7.cu'])),
     extra_cuda_cflags=['-O3', '--use_fast_math']
 )
 
@@ -52,7 +53,7 @@ print("Time taken in ms: ", start.elapsed_time(end))
 
 print('\n\n=== profiling minimal flash attention (forward pass) === ')
 with torch.no_grad():
-    (minimal_result,) = minimal_attn.forward_6(q, k, v, start_times, end_times, IsTree)
+    (minimal_result,) = minimal_attn.forward_3(q, k, v, start_times, end_times, IsTree)
 print(
     'attn values sanity check:',
     torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02),
