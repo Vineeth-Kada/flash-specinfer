@@ -37,6 +37,12 @@ https://docs.nvidia.com/cuda/ampere-tuning-guide/#occupancy
 - Mem transfer
 - Runtime
 
+VERY GOOD CONFIG
+batch_size = 4
+n_head = 1
+head_embd = 64 # 32 or 64 - restricted by shared memory size
+num_tree_nodes = 2**6 - 10
+prompt_length = 10
 
 # Ideas
 - Does using compiler to generate 'forward_gen.cu' with hardcoded values for constants help?

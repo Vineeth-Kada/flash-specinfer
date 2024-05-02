@@ -31,8 +31,6 @@ v = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda
 
 # Tree creation for SpecInfer
 start_times, end_times, causal_masks = generate_random_trees(batch_size, num_tree_nodes, prompt_length)
-# print(causal_masks)
-# print(causal_masks.shape)
 # exit()
 
 print('\n\n=== profiling torch attention === ')

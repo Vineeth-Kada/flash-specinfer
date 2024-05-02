@@ -2,7 +2,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define D 64
+# define D 64
 __global__
 void forward_6_kernel(
     const float* Q,
@@ -32,33 +32,32 @@ void forward_6_kernel(
     float* QiT = sram;
     float* Kj = &sram[tile_size];
     float* Vj = &sram[tile_size * 2];
-    // float* OiT = &sram[tile_size * 3];
+    float* Oi = &sram[tile_size * 3];
     float* startI = &sram[tile_size * 4];
     float* endI = &sram[tile_size * 4 + Bc];
     float* startJ = &sram[tile_size * 4 + 2 * Bc];
     float* endJ = &sram[tile_size * 4 + 2 * Bc + Br];
-    float* S = &sram[tile_size * 4 + 2 * Bc + 2 * Br];
+    float* ST = &sram[tile_size * 4 + 2 * Bc + 2 * Br];
     
-    int i = bz;
+    int tileID = bz;
 
     // Load Qi from HBM to SRAM, l and m to registers
     // Populate Qi - (32, {64, 128}) - Think like 1D 32*d array
     for (int start = 0; start < 32 * d; start += 32){
-        // OiT[start + tx] = 0;
         int row = (start + tx)/d;
         int col = (start + tx)%d;
         // FIXME: Bank conflict while storing
-        QiT[col * 32 + row] = Q[qkv_offset + (tile_size * i) + start + tx]; // Storing transposed
+        QiT[col * 32 + row] = Q[qkv_offset + (tile_size * tileID) + start + tx]; // Storing transposed
     }
     
-    startI[tx] = startT[(bx * N) + i * Br + tx];
-    endI[tx] = endT[(bx * N) + i * Br + tx];
+    startI[tx] = startT[(bx * N) + tileID * Br + tx];
+    endI[tx] = endT[(bx * N) + tileID * Br + tx];
     float row_m_prev = -INFINITY;
     float row_l_prev = 0;
 
-    // Causal mask: j <= i
+    // Causal mask: j <= tileID
     for (int j = 0; j < Tc; ++j) { // j is the column tile index
-        __syncthreads();
+        // __syncthreads();
         
         // Load Kj, Vj from HBM to SRAM
         // Populate Kj, Vj - (32, {64, 128}) - Think like 1D 32*64 array
@@ -69,8 +68,8 @@ void forward_6_kernel(
         
         startJ[tx] = startT[(bx * N) + j * Bc + tx];
         endJ[tx] = endT[(bx * N) + j * Bc + tx];
-        __syncthreads();
-
+        // __syncthreads();
+        
         bool mask[32];
         for(int y = 0; y < 32; y++){
             mask[y] = (!IsTree) || ((startI[tx] >= startJ[y]) && (endI[tx] <= endJ[y]));
@@ -84,14 +83,16 @@ void forward_6_kernel(
                 float sum = 0;
                 for (int x = 0; x < d; x++)
                     // FIXME: Also here we are not using register tiling for matmul
-                    // before coding comment out the matmul entire and check whether you are getting speedups
                     // FIXME: We can have extra threads in the block just for matmul QK^t rest of the time they are idle
                     sum += QiT[(x * 32) + tx] * Kj[(y * d) + x];
                 sum *= softmax_scale;
-                S[(Bc * y) + tx] = sum;
+                ST[(Bc * y) + tx] = sum;
 
                 if (sum > row_m)
                     row_m = sum;
+            }
+            else{
+                ST[(Bc * y) + tx] = 0;
             }
         }
 
@@ -102,10 +103,9 @@ void forward_6_kernel(
         // P_i^j[tx][y] = exp(S_i^j[tx][y] - m_i^j)
         float row_l = 0;
         for (int y = 0; y < Bc; y++) {
-            // causal mask
             if (mask[y]){ // FIXME: Thread divergence
-                S[(Bc * y) + tx] = __expf(S[(Bc * y) + tx] - new_row_m);
-                row_l += S[(Bc * y) + tx];
+                ST[(Bc * y) + tx] = __expf(ST[(Bc * y) + tx] - new_row_m);
+                row_l += ST[(Bc * y) + tx];
             }
         }
 
@@ -113,37 +113,73 @@ void forward_6_kernel(
         float row_m_exp = __expf(row_m_prev - new_row_m);
         float new_row_l = (row_m_exp * row_l_prev) + row_l;
 
-        // O_i^j = diag(exp(m_i^j-1 - m_i^j))^-1 * O_i^j-1 + P_i^jVj
-        for (int x = 0; x < d; x++) {
-            float pv = 0;  // Pij * Vj
-            for (int y = 0; y < Bc; y++) {
-                if (mask[y]){ // FIXME: Thread divergence
-                    pv += S[(Bc * y) + tx] * Vj[(y * d) + x];
+        // Matmul using register tiling. S - (N x N), Vj - (N x d), out - (N x d)
+        // Each thread computes (D/8 x 8) = (8 x 8) / (4 x 8)
+        // We tiled the output (32 , D) into 32 tiles
+        // Each tile has shape (D/8 , 8)
+        
+        float PVReg[D/8][8];
+        for(int I = 0; I < D/8; I++){
+            for(int J = 0; J < 8; J++){
+                PVReg[I][J] = 0;
+            }
+        }
+        # define T 4
+        float SReg[D/8][T]; float VReg[T][8];
+        
+        // We tiled the output (32 , D) into 32 tiles
+        // Each tile has shape (D/8 , 8)
+        int tileGSX = (32)  /   (D / 8); // = tile grid size in row direction
+        int tileGSY = (D)   /   8; // = tile grid size in col direction
+        
+        int tileX = tx / tileGSY;
+        int tileY = tx % tileGSY;
+        
+        for(int K = 0; K < 32; K += T){
+            int sI = (D/8) * tileX, sJ = K;
+            for(int I = 0; I < D/8; I++){
+                for(int J = 0; J < T; J++){
+                    SReg[I][J] = ST[(sJ + J) * Br + (sI + I)];
                 }
             }
-            // int temp = OiT[x * 32 + tx];
-            // temp = row_m_exp * temp + pv;
-            // OiT[x * 32 + tx] = temp;
-            O[qkv_offset + (tile_size * i) + (tx * d) + x] = \
-                row_m_exp * O[qkv_offset + (tile_size * i) + (tx * d) + x] + pv;
+            
+            sI = K, sJ = 8 * tileY;
+            for(int I = 0; I < T; I++){
+                for(int J = 0; J < 8; J++){
+                    VReg[I][J] = Vj[(sI + I) * D + (sJ + J)];
+                }
+            }
+            
+            for(int I = 0; I < D/8; I++){
+                for(int K = 0; K < 8; K++){
+                    for(int J = 0; J < T; J++){
+                        PVReg[I][K] += SReg[I][J] * VReg[J][K];
+                    }
+                }
+            }
+        }
+        
+        for(int I = 0; I < D/8; I++){
+            for(int J = 0; J < 8; J++){
+                int sI = (D/8) * tileX + I;
+                int sJ = 8 * tileY + J;
+                Oi[(sI * D) + sJ] = PVReg[I][J];
+            }
+        }
+
+        for (int x = 0; x < d; x++) {
+            O[qkv_offset + (tile_size * tileID) + (tx * d) + x] = \
+                row_m_exp * O[qkv_offset + (tile_size * tileID) + (tx * d) + x] + Oi[(tx * d) + x];
         }
 
         // Update m and l
         row_m_prev = new_row_m;
         row_l_prev = new_row_l;
     }
-    
-    __syncthreads();
-    
+
     // O_i = diag(l_i^{Tc})^-1 * O_i^{Tc}
-    for (int x = 0; x < d; x++){
-        O[qkv_offset + (tile_size * i) + (tx * d) + x] /= row_l_prev;
-    }
-    // for(int start = 0; start < 32 * d; start += 32){
-    //     int row = (start + tx)/d;
-    //     int col = (start + tx)%d;
-    //     O[qkv_offset + (tile_size * i) + start + tx] = OiT[col * 32 + row] / row_l_prev;
-    // }
+    for (int x = 0; x < d; x++)
+        O[qkv_offset + (tile_size * tileID) + (tx * d) + x] /= row_l_prev;
 }
 
 std::vector<torch::Tensor> forward_6(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
