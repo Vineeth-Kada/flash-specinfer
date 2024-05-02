@@ -27,37 +27,43 @@ void forward_4_kernel(
 
     // Define SRAM for Q,K,V,S
     extern __shared__ float sram[];
-    const int rtz = Br * d;  // size of Qi    : row_tile_size
-    const int ctz = Bc * d;  // size of Kj, Vj: col_tile_size
-    float* Qi = sram; float* Kj = &sram[rtz];
-    float* Vj = &sram[rtz+ctz];
-    float* startI = &sram[rtz + 2 * ctz];
-    float* endI = &sram[rtz + 2 * ctz + Br];
-    float* startJ = &sram[rtz + 2 * ctz + 2 * Br];
-    float* endJ = &sram[rtz + 2 * ctz + 2 * Br + Bc];
-    float* S = &sram[rtz + 2 * ctz + 2 * Br + 2 * Bc + d];
+    int tile_size = Bc * d;  // size of Qi, Kj, Vj
+    float* QiT = sram;
+    float* Kj = &sram[tile_size];
+    float* Vj = &sram[tile_size * 2];
+    float* startI = &sram[tile_size * 3];
+    float* endI = &sram[tile_size * 3 + Bc];
+    float* startJ = &sram[tile_size * 3 + 2 * Bc];
+    float* endJ = &sram[tile_size * 3 + 2 * Bc + Br];
+    float* S = &sram[tile_size * 3 + 2 * Bc + 2 * Br];
     
-    const int i = bz;
+    int i = bz;
 
     // Load Qi from HBM to SRAM, l and m to registers
-    for (int x = 0; x < d; x++) {
-        // FIXME: SHARED: Bank conflict here? Anyway it's not optimal. Adj threads should access adjacent elements.
-        // FIXME: GLOBAL: No memory coalescing here. Adj threads should access adjacent elements.
-        Qi[(tx * d) + x] = Q[qkv_offset + (rtz * i) + (x * d) + tx];
+    // Populate Qi - (32, {64, 128}) - Think like 1D 32*d array
+    for (int start = 0; start < 32 * d; start += 32){
+        int row = (start + tx)/d;
+        int col = (start + tx)%d;
+        // FIXME: Bank conflict while storing
+        QiT[col * 32 + row] = Q[qkv_offset + (tile_size * i) + start + tx]; // Storing transposed
     }
+    
     startI[tx] = startT[(bx * N) + i * Br + tx];
     endI[tx] = endT[(bx * N) + i * Br + tx];
     float row_m_prev = -INFINITY;
     float row_l_prev = 0;
-    
+
     // Causal mask: j <= i
     for (int j = 0; j < Tc; ++j) { // j is the column tile index
         __syncthreads();
+        
         // Load Kj, Vj from HBM to SRAM
-        for (int x = 0; x < d; x++) {
-            Kj[(tx * d) + x] = K[qkv_offset + (ctz * j) + (x * d) + tx];
-            Vj[(x * d) + tx] = V[qkv_offset + (ctz * j) + (x * d) + tx];
+        // Populate Kj, Vj - (32, {64, 128}) - Think like 1D 32*64 array
+        for(int start = 0; start < 32 * d; start += 32){
+            Kj[start + tx] = K[qkv_offset + (tile_size * j) + start + tx];
+            Vj[start + tx] = V[qkv_offset + (tile_size * j) + start + tx];
         }
+        
         startJ[tx] = startT[(bx * N) + j * Bc + tx];
         endJ[tx] = endT[(bx * N) + j * Bc + tx];
         __syncthreads();
@@ -71,9 +77,11 @@ void forward_4_kernel(
             if (mask){ // FIXME: Thread divergence
                 float sum = 0;
                 for (int x = 0; x < d; x++)
-                    sum += Qi[(x * d) + tx] * Kj[(x * d) + y]; // FIXME: Store Kj.T directly. conseq elements.
+                    // FIXME: Also here we are not using register tiling for matmul
+                    // FIXME: We can have extra threads in the block just for matmul QK^t rest of the time they are idle
+                    sum += QiT[(x * 32) + tx] * Kj[(y * d) + x];
                 sum *= softmax_scale;
-                S[(Bc * y) + tx] = sum; // FIXME: Again the bank thing. Shouldn't they access conseq elements?
+                S[(Bc * y) + tx] = sum;
 
                 if (sum > row_m)
                     row_m = sum;
@@ -109,8 +117,8 @@ void forward_4_kernel(
                     pv += S[(Bc * y) + tx] * Vj[(y * d) + x];
                 }
             }
-            O[qkv_offset + (rtz * i) + (tx * d) + x] = \
-                row_m_exp * O[qkv_offset + (rtz * i) + (tx * d) + x] + pv;
+            O[qkv_offset + (tile_size * i) + (tx * d) + x] = \
+                row_m_exp * O[qkv_offset + (tile_size * i) + (tx * d) + x] + pv;
         }
 
         // Update m and l
@@ -120,7 +128,7 @@ void forward_4_kernel(
 
     // O_i = diag(l_i^{Tc})^-1 * O_i^{Tc}
     for (int x = 0; x < d; x++)
-        O[qkv_offset + (rtz * i) + (tx * d) + x] /= row_l_prev;
+        O[qkv_offset + (tile_size * i) + (tx * d) + x] /= row_l_prev;
 }
 
 std::vector<torch::Tensor> forward_4(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
@@ -140,10 +148,12 @@ std::vector<torch::Tensor> forward_4(torch::Tensor Q, torch::Tensor K, torch::Te
     // TODO: determine Bc, Br dynamically
     const int Bc = 32;
     const int Br = 32;
-    // assert(Br == Bc);
+    assert(Br == Bc);
+    assert(Bc == 32);
 
     const int B = Q.size(0); const int nh = Q.size(1);
     const int N = Q.size(2); const int d = Q.size(3);
+    assert(d%32 == 0);
 
     const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
     const float softmax_scale = 1.0 / sqrt(d);

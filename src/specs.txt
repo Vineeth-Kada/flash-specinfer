@@ -19,3 +19,25 @@ https://docs.nvidia.com/cuda/ampere-tuning-guide/#occupancy
 768 Threads per Block
 2 FP32 SRAM per thread
 168 * 768 = 129024 Threads in total
+
+# Hyperparams from FlashAttention2
+- ??? Block size {64, 128} x {64, 128} s.t. head dim d & SRAM size
+
+# Testing sizes
+- Head Dimension - 32 / 64 - restricted by shared memory size
+- Num Heads - 32 / 16 (s.t. total head dim = 1024)
+- Sequence Length - 2^9, 2^10, ..., 2^14
+- Batch size s.t. total tokens 2^14; Ex: 2^5 if (2^9 seq length) 
+
+# Evaluation from FlashAttention2
+- Occupancy / TFLOPs per sec
+    - FLOPs = 4 * seqlen * seqlen * head_dim * num_heads
+        - Causal = divide by 2 
+        - Tree = ???
+- Mem transfer
+- Runtime
+
+
+# Ideas
+- Does using compiler to generate 'forward_gen.cu' with hardcoded values for constants help?
+    - We can write nice forms like __shared__ float s_Qi[32][128]; and use 2D arrays

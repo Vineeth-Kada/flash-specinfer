@@ -17,8 +17,8 @@ minimal_attn = load(
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 10
 n_head = 10
-head_embd = 32
-num_tree_nodes = 2**14 - 40
+head_embd = 64 # 32 or 64 - restricted by shared memory size
+num_tree_nodes = 2**10 - 40
 prompt_length = 40
 
 seq_len = num_tree_nodes + prompt_length
