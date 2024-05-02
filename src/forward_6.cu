@@ -32,7 +32,7 @@ void forward_6_kernel(
     float* QiT = sram;
     float* Kj = &sram[tile_size];
     float* Vj = &sram[tile_size * 2];
-    float* Oi = &sram[tile_size * 3];
+    float* PVi =  &sram[tile_size * 3];
     float* startI = &sram[tile_size * 4];
     float* endI = &sram[tile_size * 4 + Bc];
     float* startJ = &sram[tile_size * 4 + 2 * Bc];
@@ -163,13 +163,13 @@ void forward_6_kernel(
             for(int J = 0; J < 8; J++){
                 int sI = (D/8) * tileX + I;
                 int sJ = 8 * tileY + J;
-                Oi[(sI * D) + sJ] = PVReg[I][J];
+                PVi[(sI * D) + sJ] = PVReg[I][J];
             }
         }
 
         for (int x = 0; x < d; x++) {
             O[qkv_offset + (tile_size * tileID) + (tx * d) + x] = \
-                row_m_exp * O[qkv_offset + (tile_size * tileID) + (tx * d) + x] + Oi[(tx * d) + x];
+                row_m_exp * O[qkv_offset + (tile_size * tileID) + (tx * d) + x] + PVi[(tx * d) + x];
         }
 
         // Update m and l
@@ -219,7 +219,7 @@ std::vector<torch::Tensor> forward_6(torch::Tensor Q, torch::Tensor K, torch::Te
     int row_tile_size = Br * d;  // size of Qi
     const int sram_size =
         (2 * col_tile_size * sizeof(float))  // SRAM size for Kj, Vj
-        + (2 * row_tile_size * sizeof(float))  // SRAM size for Qi, Oi
+        + (2 * row_tile_size * sizeof(float))  // SRAM size for Qi, PVi
         + (2 * Bc * sizeof(float)) // SRAM for startI, endI
         + (2 * Bc * sizeof(float)) // SRAM for startJ, endJ
         + (Bc * Br * sizeof(float)); // SRAM size for S
