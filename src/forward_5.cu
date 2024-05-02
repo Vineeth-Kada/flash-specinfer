@@ -35,7 +35,7 @@ void forward_5_kernel(
     float* endI = &sram[tile_size * 3 + Bc];
     float* startJ = &sram[tile_size * 3 + 2 * Bc];
     float* endJ = &sram[tile_size * 3 + 2 * Bc + Br];
-    float* S = &sram[tile_size * 3 + 2 * Bc + 2 * Br];
+    float* ST = &sram[tile_size * 3 + 2 * Bc + 2 * Br];
     
     int i = bz;
 
@@ -84,7 +84,7 @@ void forward_5_kernel(
                     // FIXME: We can have extra threads in the block just for matmul QK^t rest of the time they are idle
                     sum += QiT[(x * 32) + tx] * Kj[(y * d) + x];
                 sum *= softmax_scale;
-                S[(Bc * y) + tx] = sum;
+                ST[(Bc * y) + tx] = sum;
 
                 if (sum > row_m)
                     row_m = sum;
@@ -99,8 +99,8 @@ void forward_5_kernel(
         float row_l = 0;
         for (int y = 0; y < Bc; y++) {
             if (mask[y]){ // FIXME: Thread divergence
-                S[(Bc * y) + tx] = __expf(S[(Bc * y) + tx] - new_row_m);
-                row_l += S[(Bc * y) + tx];
+                ST[(Bc * y) + tx] = __expf(ST[(Bc * y) + tx] - new_row_m);
+                row_l += ST[(Bc * y) + tx];
             }
         }
 
@@ -113,7 +113,7 @@ void forward_5_kernel(
             float pv = 0;  // Pij * Vj
             for (int y = 0; y < Bc; y++) {
                 if (mask[y]){ // FIXME: Thread divergence
-                    pv += S[(Bc * y) + tx] * Vj[(y * d) + x];
+                    pv += ST[(Bc * y) + tx] * Vj[(y * d) + x];
                 }
             }
             O[qkv_offset + (tile_size * i) + (tx * d) + x] = \
