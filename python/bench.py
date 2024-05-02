@@ -10,7 +10,8 @@ from tree import generate_random_trees
 # Load the CUDA kernel as a python module
 minimal_attn = load(
     name='minimal_attn',
-    sources = list(map(lambda x: '../src/' + x, ['main.cpp', 'forward_1.cu', 'forward_2.cu', 'forward_3.cu', 'forward_4.cu'])),
+    sources = list(map(lambda x: '../src/' + x, ['main.cpp', 'forward_1.cu', 'forward_2.cu', \
+                                                 'forward_3.cu', 'forward_4.cu', 'forward_5.cu', 'forward_6.cu'])),
     extra_cuda_cflags=['-O3', '--use_fast_math']
 )
 
@@ -18,11 +19,11 @@ minimal_attn = load(
 batch_size = 10
 n_head = 10
 head_embd = 64 # 32 or 64 - restricted by shared memory size
-num_tree_nodes = 2**10 - 40
-prompt_length = 40
+num_tree_nodes = 2**10 - 10
+prompt_length = 10
 
 seq_len = num_tree_nodes + prompt_length
-IsTree = False
+IsTree = True
 
 q = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
 k = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
@@ -53,7 +54,7 @@ print("Time taken in ms: ", start.elapsed_time(end))
 
 print('\n\n=== profiling minimal flash attention (forward pass) === ')
 with torch.no_grad():
-    (minimal_result,) = minimal_attn.forward_4(q, k, v, start_times, end_times, IsTree)
+    (minimal_result,) = minimal_attn.forward_6(q, k, v, start_times, end_times, IsTree)
 print(
     'attn values sanity check:',
     torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02),
