@@ -135,15 +135,6 @@ std::vector<torch::Tensor> forward_5(torch::Tensor Q, torch::Tensor K, torch::Te
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0); 
     
-    printf("SMs: %d\n", prop.multiProcessorCount);
-    printf("Max Grid Size: %d x %d x %d\n", prop.maxGridSize[0], prop.maxGridSize[1], prop.maxGridSize[2]);
-    printf("Max Block Size: %d x %d x %d\n", prop.maxThreadsDim[0], prop.maxThreadsDim[1], prop.maxThreadsDim[2]);
-    printf("Max Threads per Block: %d\n", prop.maxThreadsPerBlock);
-    printf("Max Threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
-    printf("Max Warps per SM: %d\n", prop.maxThreadsPerMultiProcessor / prop.warpSize);
-    printf("Max Share Memory per SM: %d KB\n", prop.sharedMemPerMultiprocessor / 1024);
-    printf("Max Share Memory per Block: %d KB\n", prop.sharedMemPerBlock / 1024);
-    
     // TODO: determine Bc, Br dynamically
     const int Bc = 32;
     const int Br = 32;
@@ -172,7 +163,6 @@ std::vector<torch::Tensor> forward_5(torch::Tensor Q, torch::Tensor K, torch::Te
         + (Bc * Br * sizeof(float)); // SRAM size for S
     
     int max_sram_size = prop.sharedMemPerBlock;
-    printf("Max shared memory: %d, requested shared memory: %d \n", max_sram_size, sram_size);
 
     dim3 grid_dim(B, nh, Tr);  // batch_size x num_heads x seq_length
     dim3 block_dim(Br); // FIXME
@@ -189,7 +179,6 @@ std::vector<torch::Tensor> forward_5(torch::Tensor Q, torch::Tensor K, torch::Te
 
     cudaEventRecord(stop); cudaEventSynchronize(stop);
     float milliseconds = 0; cudaEventElapsedTime(&milliseconds, start, stop);
-    printf("Kernel execution time: %f ms\n", milliseconds);
     
-    return {O};
+    return {O, torch::tensor({milliseconds}), torch::tensor({max_sram_size}), torch::tensor({sram_size})};
 }

@@ -53,8 +53,8 @@ print("Time taken in ms: ", start.elapsed_time(end))
 
 print('\n\n=== profiling minimal flash attention (forward pass) === ')
 with torch.no_grad():
-    (minimal_result,) = minimal_attn.forward_3(q, k, v, start_times, end_times, IsTree)
-print(
-    'attn values sanity check:',
-    torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02),
-)
+    for i in range(1, 7 + 1):
+        forward_func = getattr(minimal_attn, f'forward_{i}')
+        (minimal_result, time_taken, max_shared_mem, used_shared_mem) = forward_func(q, k, v, start_times, end_times, IsTree)
+        print(f"\033[1;34mIteration {i:3d}: \033[1;32mTime taken (ms): {time_taken.item():8.2f}; \033[1;35mSRAM Used: {used_shared_mem.item():6d}; \033[1;36mMax SRAM: {max_shared_mem.item():6d};\033[0m")
+        # print('attention values sanity check:', torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02))

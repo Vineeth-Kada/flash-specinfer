@@ -12,6 +12,15 @@ Max Share Memory per Block: 48 KB
 Maximum grid dimensions: 2147483647 x 65535 x 65535
 Maximum block dimensions: 1024 x 1024 x 64
 
+// printf("SMs: %d\n", prop.multiProcessorCount);
+// printf("Max Grid Size: %d x %d x %d\n", prop.maxGridSize[0], prop.maxGridSize[1], prop.maxGridSize[2]);
+// printf("Max Block Size: %d x %d x %d\n", prop.maxThreadsDim[0], prop.maxThreadsDim[1], prop.maxThreadsDim[2]);
+// printf("Max Threads per Block: %d\n", prop.maxThreadsPerBlock);
+// printf("Max Threads per SM: %d\n", prop.maxThreadsPerMultiProcessor);
+// printf("Max Warps per SM: %d\n", prop.maxThreadsPerMultiProcessor / prop.warpSize);
+// printf("Max Share Memory per SM: %d KB\n", prop.sharedMemPerMultiprocessor / 1024);
+// printf("Max Share Memory per Block: %d KB\n", prop.sharedMemPerBlock / 1024);
+
 https://docs.nvidia.com/cuda/ampere-tuning-guide/#occupancy
 
 2 Blocks per SM
