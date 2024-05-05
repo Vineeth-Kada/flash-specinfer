@@ -106,6 +106,8 @@ def generate_random_trees(num_trees, num_nodes, root_chain):
     end_times = torch.stack(tree_end_times)
     causal_masks = create_causal_mask(start_times, end_times)
 
+    if not os.path.exists("../data"):
+        os.makedirs("../data")
     torch.save({
         'start_times': start_times.cpu(),
         'end_times': end_times.cpu(),

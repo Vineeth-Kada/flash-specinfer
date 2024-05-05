@@ -24,11 +24,11 @@ minimal_attn = load(
 batch_size = 10
 n_head = 10
 head_embd = 64 # 32 or 64 - restricted by shared memory size
-num_tree_nodes = 2**12 - 10
+num_tree_nodes = 2**10 - 10
 prompt_length = 10
 
 seq_len = num_tree_nodes + prompt_length
-IsTree = False
+IsTree = True
 
 q = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
 k = torch.randn(batch_size, n_head, seq_len, head_embd, requires_grad=True).cuda()
@@ -64,12 +64,12 @@ with torch.no_grad():
         print(f"\033[1;34mIteration {i:3d}: \033[1;32mTime taken (ms): {time_taken.item():8.2f}; \033[1;35mSRAM Used: {used_shared_mem.item():6d}; \033[1;36mMax SRAM: {max_shared_mem.item():6d};\033[0m")
         print('attention values sanity check:', torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02))
         
-if not IsTree:
-    causal_mask = torch.ones((batch_size, n_head, seq_len, seq_len), dtype=torch.bool).cuda().contiguous()
-print('\n\n=== profiling minimal flash attention - base (forward pass) === ')
-with torch.no_grad():
-    for i in [2, 3, 4, 5, 6, 7, 8]:
-        forward_func = getattr(minimal_attn, f'forward_base_{i}')
-        (minimal_result, time_taken, max_shared_mem, used_shared_mem) = forward_func(q, k, v, causal_mask, IsTree)
-        print(f"\033[1;34mIteration {i:3d}: \033[1;32mTime taken (ms): {time_taken.item():8.2f}; \033[1;35mSRAM Used: {used_shared_mem.item():6d}; \033[1;36mMax SRAM: {max_shared_mem.item():6d};\033[0m")
-        print('attention values sanity check:', torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02))
+# if not IsTree:
+#     causal_mask = torch.ones((batch_size, n_head, seq_len, seq_len), dtype=torch.bool).cuda().contiguous()
+# print('\n\n=== profiling minimal flash attention - base (forward pass) === ')
+# with torch.no_grad():
+#     for i in [2, 3, 4, 5, 6, 7, 8]:
+#         forward_func = getattr(minimal_attn, f'forward_base_{i}')
+#         (minimal_result, time_taken, max_shared_mem, used_shared_mem) = forward_func(q, k, v, causal_mask, IsTree)
+#         print(f"\033[1;34mIteration {i:3d}: \033[1;32mTime taken (ms): {time_taken.item():8.2f}; \033[1;35mSRAM Used: {used_shared_mem.item():6d}; \033[1;36mMax SRAM: {max_shared_mem.item():6d};\033[0m")
+#         print('attention values sanity check:', torch.allclose(minimal_result, manual_result_torch, rtol=0, atol=1e-02))
